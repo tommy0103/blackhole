@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BLACKHOLE // BLOG — 只留一行 git clone：把最后一公里交给你的 Agent</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <!-- Minimal Top Bar -->
+  <header class="topbar">
+    <a href="./index.html" class="brand-mark">
+      <span class="status-indicator-dot"></span>
+      <span>BLACKHOLE</span>
+    </a>
+
+    <div class="top-actions">
+      <a href="./index.html" class="hud-btn" id="nav-home">HOME</a>
+      <a href="./blog.html" class="hud-btn active-nav" id="nav-blog">博客</a>
+      <button id="blog-lang-toggle" class="hud-btn" type="button">EN</button>
+      <a href="https://github.com/tommy0103/blackhole" target="_blank" rel="noopener noreferrer" class="hud-btn">GITHUB ↗</a>
+    </div>
+  </header>
+
+  <main class="blog-shell">
+    <!-- CHINESE ARTICLE (DEFAULT, MATCHING website/article.md) -->
+    <article id="article-zh" class="blog-article">
+      <div class="blog-meta">
+        <span>ESSAY // 01</span>
+        <span>·</span>
+        <span>AI-NATIVE SOFTWARE DELIVERY</span>
+      </div>
+
+      <h1 class="blog-title">
+        只留一行 <code>git clone</code>：把最后一公里交给你的 Agent
+      </h1>
+
+      <p>今天读到 Steven Lynn 写的一篇文章，聊到软件工程里一个困扰了开发者几十年的乘法题：</p>
+
+      <p>几个基础的操作系统和运行场景，和具有几类不同使用习惯的用户：有人用 macOS、有人用 Arch Linux、有人挂 Surge TUN、有人用 Clash HTTP 代理、有人写 Rust、有人需要跨终端同步剪贴板。这两个正交的维度一旦组合，立刻就会裂变出几千种具体的需求。</p>
+
+      <p>过去的开源作者往往只有两条路可走：要么把所有跨平台兼容逻辑、配置开关和边缘情况全塞进代码库，最后写出一个谁都觉得重、谁都调不通的超大仓库；要么只服务最大公约数，任何环境稍微偏离预设轨道的用户只能提 Issue 漫长等待。</p>
+
+      <p>但站在今天，「每个人电脑上都常驻着一个趁手的编程 Agent」已经成了一个默认成立的前提。当用户的终端拥有了就地理解代码、排查环境和动手改造软件的能力，我们交付软件的终点其实已经变了：<strong>开发者不再需要替远端成千上万个素未谋面的用户穷举所有组合，而是应该交付一套「技术选型明确、能力高度原子化、工程架构透明可读」的标准件，把最后一公里交给用户本机的 Agent。</strong></p>
+
+      <p>这恰恰是我设计和开源 <strong>Blackhole</strong> 时的全部想法。</p>
+
+      <hr />
+
+      <h2>为什么要做 Blackhole？</h2>
+
+      <p>用过 Claude Code 的人大概都有过这种割裂感：一方面，你希望它拥有足够高的自主权（甚至开启 <code>--dangerously-skip-permissions</code>），让它自己跑测试、装依赖、改代码；但另一方面，如果你直接在宿主机上裸跑，或者只是随手起一个普通 Docker 容器挂载目录，它实际上能看到你整台机器的底裤：</p>
+
+      <ul>
+        <li>你的 <code>$HOME</code> 目录、<code>~/.ssh</code>、<code>~/.gitconfig</code> 和云厂商凭证；</li>
+        <li>宿主机环境变量里带出的硬件标识、系统语言、时区与账号指纹；</li>
+        <li>一旦你本机的代理软件意外闪退，容器流量会立刻降级为宿主机直连，在毫无察觉的情况下裸奔。</li>
+      </ul>
+
+      <p>我想要的是一个像「黑洞」一样的隔离层：</p>
+
+      <ol>
+        <li><strong>宿主机零污染、零 fingerprint</strong>：宿主机上甚至不需要安装 <code>@anthropic-ai/claude-code</code> 或 Node.js。所有的硬件标识、网卡信息、<code>$HOME</code> 目录在边界处被彻底截断。</li>
+        <li><strong>极速的工作区穿透</strong>：只有你当前所在的项目目录（<code>$PWD</code>）和用于粘贴截图的临时目录（<code>$TMPDIR</code>），通过 Apple Virtualization (<code>vz</code>) + <code>virtiofs</code> 穿透进容器，读写吞吐保持在 3.2 GB/s，1000 个小文件遍历只需 33.9 ms，跑 <code>rg</code> 和 <code>git status</code> 毫无体感延迟。</li>
+        <li><strong>Fail-Close 网络熔断</strong>：在虚拟机内核的 <code>iptables</code> <code>DOCKER-USER</code> 链上直接上锁。代理不在线，或者断流守护进程心跳超时，容器网络立刻物理锁死，绝不漏出一个直连数据包。</li>
+      </ol>
+
+      <hr />
+
+      <h2>把沙箱做成「原子化标准件」，而不是大黑盒</h2>
+
+      <p>如果按照传统软件的思路做这样一个工具，它大概率会变成一个带着复杂设置面板的桌面客户端，或者一个上千行配置的 YAML 引擎。</p>
+
+      <p>但在做 Blackhole 时，我严格遵循了「标准件」的三个原则：</p>
+
+      <h3>1. 把最难的底层取舍敲死</h3>
+
+      <p>在 macOS 上跑容器，最容易踩坑的就是文件挂载性能、容器内外 UID/GID 权限错乱、以及宿主机文件被意外写坏。Blackhole 在底座上的选择：</p>
+
+      <ul>
+        <li>底层直接锁定 <code>vz</code> + <code>virtiofs</code>；</li>
+        <li>容器启动瞬间，通过 <code>docker-entrypoint.sh</code> 动态读取 <code>/workspace</code> 的宿主机 UID/GID，用 <code>gosu</code> 实时对齐容器内 <code>node</code> 用户的身份，宿主机永远不会出现 <code>root</code> 属主文件；</li>
+        <li>所有配置写入、注册表更新、会话导出和信号传递，全部强制采用同目录临时文件 + <code>mv</code> 原子替换，杜绝并发竞态。</li>
+      </ul>
+
+      <h3>2. 把所有高阶能力拆成正交的原子能力</h3>
+
+      <p>系统里所有功能都是独立的原子原语，按需拼装：</p>
+
+      <ul>
+        <li><strong>想要给不同客户或不同项目完全隔离的凭证与资源？</strong> 用 <code>blackhole bind &lt;profile&gt; &lt;dir&gt;</code>，把目录绑定到独立的虚拟机 Profile，子目录自动继承。</li>
+        <li><strong>某个项目需要用 <code>cargo</code>、<code>ffmpeg</code> 或特定的 C++ 头文件？</strong> macOS 的 <code>/opt/homebrew</code> 二进制不能挂进 Linux 容器，你只需要在项目下放一个 <code>.blackhole/Dockerfile</code>，继承 <code>blackhole-claude:latest</code> 写两行 <code>apt-get</code>，Blackhole 会自动为这个项目构建专属派生镜像，既不污染全局，也不泄露项目源码到构建上下文。</li>
+        <li><strong>想要让宿主机上的其他脚本或 Agent 与容器内的 Claude 协同？</strong> 用内置的 <code>blackhole signal</code> 原语做原子化的文件信号同步。</li>
+        <li><strong>想要让宿主机的 Agent 读取某次长对话，或者实时备份、跨虚拟机迁移？</strong> 用 <code>blackhole sessions</code>、<code>export-watch</code> 和 <code>resume</code>。</li>
+      </ul>
+
+      <h3>3. 让工程规范本身成为给 Agent 读的蓝图</h3>
+
+      <p>做官网的时候，我原本在页面上放了四五步安装和初始化命令。后来我想了想，把它们全删了，只留下了一行：</p>
+
+      <pre><code>git clone https://github.com/tommy0103/blackhole.git</code></pre>
+
+      <p>为什么敢只留一行 <code>git clone</code>？因为仓库根目录里有一份专门写给 AI 读的 <code>AGENTS.md</code>。</p>
+
+      <p>在这份 <code>AGENTS.md</code> 里，我把整个项目的运维手册（<strong>Part 1: Operator Playbook</strong>）和架构部分（<strong>Part 2: Developer Playbook</strong>）写得清清楚楚——甚至明确列出了哪 5 条核心安全不变量（比如禁止透传全量 <code>env</code>、只读探针必须加 <code>--network none</code>、所有落盘必须原子重命名）是绝对不能被破坏的。</p>
+
+      <p>当你把仓库克隆下来，你只需要对你电脑上的 Agent 说一句：</p>
+
+      <blockquote>
+        <p>「读一下这个仓库的 <code>README.md</code> 和 <code>AGENTS.md</code>，帮我把 Blackhole 配好，并给我当前的项目配好代理断流保护。」</p>
+      </blockquote>
+
+      <p>你本地的 Agent 会自己先跑只读状态检查，自己拉起环境、构建镜像、绑定目录。</p>
+
+      <hr />
+
+      <h2>如果你在用 Linux，或者不想用 Colima 呢？</h2>
+
+      <p>这也是我觉得「把最后一公里交给用户本地 Agent」最迷人的地方。</p>
+
+      <p>目前 Blackhole 默认锁定的宿主机运行时是 <strong>macOS + Colima</strong>。放在以前，如果一位重度 Linux 用户，或者习惯了 OrbStack / Podman 的开发者看到这个项目，第一反应一定是：「不支持我的环境，提个 Issue 等作者做跨平台兼容吧。」</p>
+
+      <p>但如果你打开 Blackhole 的代码库，你会发现：</p>
+
+      <ul>
+        <li><strong>85% 的核心组件（整个容器层）已经是 100% 纯粹的 OCI / Linux 标准件</strong>：<code>Dockerfile</code>、<code>docker-entrypoint.sh</code>（自动对齐宿主机 UID/GID 的逻辑在原生 Linux Docker 下反而更加刚需）、会话钩子 <code>blackhole-session-hook.sh</code>、注册表查询器 <code>blackhole-registry.mjs</code>、跨进程信号器 <code>blackhole-signal.mjs</code>，在 Linux、OrbStack 或 Podman 下一个字节都不用改。</li>
+        <li><strong>宿主机脚本 <code>bin/blackhole</code> 里的平台耦合点，被严格收敛在 4 个独立的函数漏斗里</strong>：
+          <ol>
+            <li><code>docker_for()</code>：只用了一行 <code>DOCKER_HOST="unix://${COLIMA_DIR}/${profile}/docker.sock" docker "$@"</code> 来寻址守护进程；</li>
+            <li><code>ensure_vm()</code>：虚拟机状态检查；</li>
+            <li><code>net</code> / <code>net-watch</code>：通过 <code>colima ssh</code> 操作 <code>iptables</code> 与检测 <code>utun</code> 网卡；</li>
+            <li><code>clipboard</code>：调用 macOS <code>osascript</code> 提取剪贴板图片。</li>
+          </ol>
+        </li>
+      </ul>
+
+      <p>因为架构边界是透明的，而且 <code>AGENTS.md</code> 里已经画好了完整的文件地图与安全契约，你完全不需要等我在云端写出一个兼容所有 Linux 发行版和所有容器运行时的臃肿版本。</p>
+
+      <p>如果你在用 <strong>Arch Linux + Wayland + 原生 Docker</strong>，或者在 macOS 上用 <strong>OrbStack</strong>，你只需要把 Blackhole 克隆下来，对你的本地 Agent 说：</p>
+
+      <blockquote>
+        <p>「阅读 <code>AGENTS.md</code> 里的架构说明和核心不变量，帮我把 <code>bin/blackhole</code> 适配到我当前的 Linux / OrbStack 环境，把剪贴板同步换成 <code>wl-paste</code>，同时保留所有隔离属性。」</p>
+      </blockquote>
+
+      <p>几分钟后，跑在你电脑上的，就是一个完全贴合你个人系统环境、同时严格遵循 Blackhole 隔离契约的专属版本。</p>
+
+      <hr />
+
+      <h2>邀请你和你的 Agent 一起共创 Blackhole</h2>
+
+      <p>我一直觉得，AI Native 时代的开源社区，不应该再是「作者在上面吭哧吭哧写兼容补丁，用户在下面排队提功能许愿单」的单向关系了。</p>
+
+      <p>当每个人手里都有强大的 Agent，每个人都是最懂自己本地环境的架构师。我把 Blackhole 的底座打磨到了最克制的状态，现在想邀请你——以及你电脑里的 Agent——一起来共创这个项目：</p>
+
+      <ol>
+        <li><strong>用你的 Agent 探索属于你的「最后一公里」</strong><br />无论你是把 Blackhole 移植到了原生 Linux、OrbStack、Lima、Podman，还是为你的特定语言栈打造了趁手的 <code>.blackhole/Dockerfile</code> 模板，或者针对 Clash / Sing-box / WireGuard 写出了更巧妙的 <code>net-watch</code> 探针，都欢迎让你的 Agent 整理成 PR 或 Recipes 分享出来。</li>
+        <li><strong>一起来压测与打磨 <code>AGENTS.md</code></strong><br />在 AI 交付时代，<code>AGENTS.md</code> 的质量直接决定了用户本地 Agent 接手和改造项目的丝滑程度。如果你的 Agent 在阅读 <code>AGENTS.md</code> 操作或改造 Blackhole 时遇到了任何歧义，欢迎直接让你的 Agent 提交 PR 修正这份蓝图。</li>
+        <li><strong>验证与加固黑洞边界</strong><br />如果你发现了任何潜在的宿主机指纹泄露路径、环境变量渗透或者更优雅的内核级隔离方案，欢迎一起让这个黑洞的视界更纯粹。</li>
+      </ol>
+
+      <p>你可以先打开我们的交互演示页，直观看看 Blackhole 是怎么在宿主机与容器之间过滤数据的：</p>
+
+      <ul>
+        <li><strong>交互演示网站</strong>：<a href="./index.html">https://tommy0103.github.io/blackhole/</a></li>
+        <li><strong>GitHub 仓库</strong>：<a href="https://github.com/tommy0103/blackhole" target="_blank" rel="noopener noreferrer">https://github.com/tommy0103/blackhole</a></li>
+      </ul>
+
+      <p>不需要复杂的安装指南，复制那一行 <code>git clone</code>，剩下的交给你的 Agent 就好。期待看到你和你的 Agent 拼出的 Blackhole。</p>
+    </article>
+
+    <!-- ENGLISH ARTICLE (TOGGLED VIA EN/中文 BUTTON) -->
+    <article id="article-en" class="blog-article" style="display: none;">
+      <div class="blog-meta">
+        <span>ESSAY // 01</span>
+        <span>·</span>
+        <span>AI-NATIVE SOFTWARE DELIVERY</span>
+      </div>
+
+      <h1 class="blog-title">
+        One <code>git clone</code>: Leaving the Last Mile to Your Agent
+      </h1>
+
+      <p>I recently read an essay by Steven Lynn about a multiplication problem that has haunted software engineering for decades:</p>
+
+      <p>Take a handful of operating systems and runtime environments, and multiply them by users with completely different habits — some on macOS, some on Arch Linux, some routing traffic through Surge TUN, others using Clash HTTP proxies, some building Rust toolchains, others needing cross-terminal clipboard sync. Once those two variables multiply, they fracture into thousands of distinct edge-case requirements.</p>
+
+      <p>Historically, open-source maintainers had only two choices: either stuff every cross-platform compatibility branch, config flag, and edge case into the codebase until it becomes a bloated monolith, or serve only the lowest common denominator and leave anyone with a slightly non-standard setup waiting in the issue tracker.</p>
+
+      <p>Today, however, a new foundational assumption holds true: almost every developer has a capable coding Agent living right on their machine. When the user's terminal can understand code, inspect local environment quirks, and adapt software in place, the finish line of software delivery changes: <strong>maintainers no longer need to pre-solve every permutation in the cloud. Instead, we should deliver deterministic, atomic standard parts with a machine-readable blueprint — and leave the last mile to the user's local Agent.</strong></p>
+
+      <p>That exact philosophy shaped every design decision in <strong>Blackhole</strong>.</p>
+
+      <hr />
+
+      <h2>Why Build Blackhole?</h2>
+
+      <p>Anyone who uses Claude Code seriously knows the tension: you want to give it full autonomy (even <code>--dangerously-skip-permissions</code>) so it can run tests, install packages, and refactor unimpeded; yet running it bare on your host — or inside a naive Docker container with broad mounts — exposes your entire machine:</p>
+
+      <ul>
+        <li>Your <code>$HOME</code> directory, <code>~/.ssh</code>, <code>~/.gitconfig</code>, and cloud credentials;</li>
+        <li>Host environment variables leaking hardware UUIDs, locale, timezone, and account identity;</li>
+        <li>Silent direct-connection leaks the moment a local proxy crashes or restarts.</li>
+      </ul>
+
+      <p>I wanted an isolation boundary that behaves like a black hole:</p>
+
+      <ol>
+        <li><strong>Zero Host Pollution, Zero Fingerprint</strong>: Neither <code>@anthropic-ai/claude-code</code> nor Node.js is installed on your host. Hardware identifiers, network interfaces, and home directories are severed at the event horizon.</li>
+        <li><strong>High-Velocity Workspace Slingshot</strong>: Only your current project directory (<code>$PWD</code>) and temporary clipboard staging (<code>$TMPDIR</code>) cross into the container over Apple Virtualization (<code>vz</code>) + <code>virtiofs</code>, sustaining 3.2 GB/s reads and 33.9 ms metadata traversal across 1,000 files.</li>
+        <li><strong>Fail-Close Network Airgap</strong>: Enforced directly on the VM kernel's <code>iptables</code> <code>DOCKER-USER</code> chain. If your proxy drops or the watchdog heartbeat ages out, container egress locks shut immediately.</li>
+      </ol>
+
+      <hr />
+
+      <h2>Building Atomic Standard Parts Instead of a Black Box</h2>
+
+      <p>Built the traditional way, a tool like this would become a heavy Electron GUI or a sprawling YAML engine. Instead, Blackhole follows three rules of atomic standard parts:</p>
+
+      <h3>1. Lock Down the Hard Architectural Trade-Offs</h3>
+
+      <ul>
+        <li>The base stack is pinned to <code>vz</code> + <code>virtiofs</code>;</li>
+        <li>On container startup, <code>docker-entrypoint.sh</code> inspects the host UID/GID of <code>/workspace</code> and aligns the container <code>node</code> user via <code>gosu</code>, preventing root-owned files on the host;</li>
+        <li>Every state file, registry update, exported transcript, and cross-agent signal uses same-directory temporary files + atomic <code>mv</code>.</li>
+      </ul>
+
+      <h3>2. Decompose Advanced Capabilities into Orthogonal Primitives</h3>
+
+      <ul>
+        <li><strong>Per-client or per-project isolation?</strong> Run <code>blackhole bind &lt;profile&gt; &lt;dir&gt;</code> to bind a directory tree to a dedicated VM profile and credential volume.</li>
+        <li><strong>Project-specific Linux packages like <code>cargo</code> or <code>ffmpeg</code>?</strong> Drop a two-line <code>.blackhole/Dockerfile</code> extending <code>blackhole-claude:latest</code> into your project. Blackhole builds a derived image hashed to that directory without polluting the base image.</li>
+        <li><strong>Host-to-container agent coordination?</strong> Use <code>blackhole signal</code> for atomic file-based signaling.</li>
+        <li><strong>Session discovery, live backup, or migration?</strong> Compose <code>blackhole sessions</code>, <code>export-watch</code>, and <code>resume</code>.</li>
+      </ul>
+
+      <h3>3. Make the Engineering Blueprint Readable by Agents</h3>
+
+      <p>When designing the landing page, I deleted the multi-step installation tutorial and left a single line:</p>
+
+      <pre><code>git clone https://github.com/tommy0103/blackhole.git</code></pre>
+
+      <p>Why? Because the repository root ships with a comprehensive <code>AGENTS.md</code> divided into <strong>Part 1: Operator Playbook</strong> and <strong>Part 2: Developer Playbook</strong> — complete with an architecture file map and 5 non-negotiable security invariants.</p>
+
+      <p>Once cloned, you simply tell your local Agent:</p>
+
+      <blockquote>
+        <p>"Read <code>README.md</code> and <code>AGENTS.md</code> in this repo, set up Blackhole for my machine, and configure fail-close proxy protection for my current project."</p>
+      </blockquote>
+
+      <hr />
+
+      <h2>What If You Use Linux, or Prefer OrbStack / Podman Over Colima?</h2>
+
+      <p>This is where handing the last mile to the user's local Agent truly shines.</p>
+
+      <p>Out of the box, Blackhole targets <strong>macOS + Colima</strong>. In the old open-source model, a Linux or OrbStack user would file an issue and wait months for upstream cross-platform support. But if you inspect Blackhole's codebase:</p>
+
+      <ul>
+        <li><strong>85% of the project (the entire container layer) is already 100% pure OCI / Linux standard parts</strong>: <code>Dockerfile</code>, <code>docker-entrypoint.sh</code> (whose dynamic UID/GID matching is even more vital on native Linux Docker), <code>blackhole-session-hook.sh</code>, <code>blackhole-registry.mjs</code>, and <code>blackhole-signal.mjs</code> require zero changes on Linux, OrbStack, or Podman.</li>
+        <li><strong>Host coupling inside <code>bin/blackhole</code> is isolated to 4 small funnel functions</strong>:
+          <ol>
+            <li><code>docker_for()</code>: a single <code>DOCKER_HOST</code> wrapper;</li>
+            <li><code>ensure_vm()</code>: VM readiness check;</li>
+            <li><code>net</code> / <code>net-watch</code>: <code>iptables</code> rules and <code>utun</code> interface checks;</li>
+            <li><code>clipboard</code>: macOS <code>osascript</code> image extraction.</li>
+          </ol>
+        </li>
+      </ul>
+
+      <p>If you run <strong>Arch Linux + Wayland + native Docker</strong>, or <strong>OrbStack</strong> on macOS, just clone the repo and tell your Agent:</p>
+
+      <blockquote>
+        <p>"Read the architecture map and core invariants in <code>AGENTS.md</code>, adapt <code>bin/blackhole</code> to my native Linux / OrbStack runtime, and swap clipboard syncing to <code>wl-paste</code> while preserving all isolation invariants."</p>
+      </blockquote>
+
+      <hr />
+
+      <h2>Co-Create Blackhole With Your Agent</h2>
+
+      <p>Open-source in the AI-native era no longer needs to be a one-way queue of feature requests. You — and your local Agent — are invited to co-create Blackhole:</p>
+
+      <ol>
+        <li><strong>Explore Your Own Last Mile</strong>: Port Blackhole to native Linux, OrbStack, Lima, or Podman; craft language-specific <code>.blackhole/Dockerfile</code> recipes; or build custom <code>net-watch</code> probes for Clash, Sing-box, or WireGuard, and have your Agent open a PR.</li>
+        <li><strong>Stress-Test and Refine <code>AGENTS.md</code></strong>: If your Agent hits any ambiguity while operating or modifying Blackhole, have it submit a PR to sharpen the blueprint.</li>
+        <li><strong>Harden the Event Horizon</strong>: Help audit and strengthen the isolation boundary against any subtle host fingerprint or environment leakage.</li>
+      </ol>
+
+      <ul>
+        <li><strong>Interactive Demo</strong>: <a href="./index.html">https://tommy0103.github.io/blackhole/</a></li>
+        <li><strong>GitHub Repository</strong>: <a href="https://github.com/tommy0103/blackhole" target="_blank" rel="noopener noreferrer">https://github.com/tommy0103/blackhole</a></li>
+      </ul>
+    </article>
+  </main>
+
+  <footer class="footer">
+    <div>BLACKHOLE // MIT LICENSE</div>
+    <div>
+      <a href="./index.html">Home</a>
+      &nbsp;/&nbsp;
+      <a href="./blog.html">Blog</a>
+      &nbsp;/&nbsp;
+      <a href="https://github.com/tommy0103/blackhole" target="_blank" rel="noopener noreferrer">GitHub</a>
+      &nbsp;/&nbsp;
+      <a href="https://github.com/tommy0103/blackhole/blob/main/README.md" target="_blank" rel="noopener noreferrer">README</a>
+      &nbsp;/&nbsp;
+      <a href="https://github.com/tommy0103/blackhole/blob/main/AGENTS.md" target="_blank" rel="noopener noreferrer">AGENTS.md</a>
+    </div>
+  </footer>
+
+  <script>
+    const langBtn = document.getElementById('blog-lang-toggle');
+    const zhArticle = document.getElementById('article-zh');
+    const enArticle = document.getElementById('article-en');
+    const navHome = document.getElementById('nav-home');
+    const navBlog = document.getElementById('nav-blog');
+    let blogLang = 'zh';
+
+    langBtn.addEventListener('click', () => {
+      blogLang = blogLang === 'zh' ? 'en' : 'zh';
+      if (blogLang === 'zh') {
+        zhArticle.style.display = 'block';
+        enArticle.style.display = 'none';
+        langBtn.textContent = 'EN';
+        navHome.textContent = '首页';
+        navBlog.textContent = '博客';
+      } else {
+        zhArticle.style.display = 'none';
+        enArticle.style.display = 'block';
+        langBtn.textContent = '中文';
+        navHome.textContent = 'HOME';
+        navBlog.textContent = 'BLOG';
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BLACKHOLE — Zero-Fingerprint Colima Sandbox for Claude Code</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <!-- Minimal Top Bar -->
+  <header class="topbar">
+    <a href="#" class="brand-mark">
+      <span class="status-indicator-dot"></span>
+      <span id="badge-status-text">BLACKHOLE</span>
+    </a>
+
+    <div class="top-actions">
+      <button id="airgap-toggle" class="hud-btn" type="button">[ SIMULATE PROXY DROP : OFF ]</button>
+      <a href="./blog.html" class="hud-btn" data-i18n="nav_blog">BLOG</a>
+      <button id="lang-toggle" class="hud-btn" type="button">中文</button>
+      <a href="https://github.com/tommy0103/blackhole" target="_blank" rel="noopener noreferrer" class="hud-btn">GITHUB ↗</a>
+    </div>
+  </header>
+
+  <main>
+    <!-- HERO: Crystal-Clear 3-Stage Visual Pipeline (Left Host -> Center Black Hole -> Right Container) -->
+    <section class="hero">
+      <div class="hero-header">
+        <span class="eyebrow" data-i18n="eyebrow">macOS Colima Sandbox // Zero Host Fingerprint</span>
+        <h1 class="hero-title" data-i18n="hero_title">
+          Swallow Host Fingerprints. Pass Only /workspace.
+        </h1>
+        <p class="hero-subtitle" data-i18n="hero_sub">
+          When you type claude on your Mac, Blackhole intercepts the launch. Hardware serials, region settings, and SSH keys are swallowed into the singularity — only your current folder slingshots across into an isolated Colima VM.
+        </p>
+      </div>
+
+      <!-- 3-Column Interactive Singularity Pipeline -->
+      <div id="diagram-stage" class="diagram-stage">
+        <!-- WebGL Black Hole + 2D Particle Streams Canvas -->
+        <div id="stage-canvas-wrap" aria-hidden="true">
+          <canvas id="webgl-canvas"></canvas>
+          <canvas id="flow-canvas"></canvas>
+        </div>
+
+        <!-- LEFT COLUMN: Raw macOS Host Inputs -->
+        <div class="stage-column left-col">
+          <div class="col-header">
+            <span data-i18n="col_left_title">01. YOUR MAC HOST</span>
+            <span data-i18n="col_left_sub">RAW ENV</span>
+          </div>
+
+          <div class="stream-item swallowed" data-stream="0">
+            <span class="stream-name" data-i18n="s_item_0">Hardware UUID (ioreg)</span>
+            <span class="stream-fate fate-swallowed" data-i18n="fate_drop">SWALLOWED</span>
+          </div>
+
+          <div class="stream-item swallowed" data-stream="1">
+            <span class="stream-name" data-i18n="s_item_1">Region &amp; Locale (zh_CN)</span>
+            <span class="stream-fate fate-swallowed" data-i18n="fate_drop">SWALLOWED</span>
+          </div>
+
+          <div class="stream-item swallowed" data-stream="2">
+            <span class="stream-name" data-i18n="s_item_2">~/.ssh &amp; Cloud Keys</span>
+            <span class="stream-fate fate-swallowed" data-i18n="fate_drop">SWALLOWED</span>
+          </div>
+
+          <div class="stream-item swallowed" data-stream="3">
+            <span class="stream-name" data-i18n="s_item_3">Other Repos (~/Code/*)</span>
+            <span class="stream-fate fate-swallowed" data-i18n="fate_drop">SWALLOWED</span>
+          </div>
+
+          <div class="stream-item swallowed" data-stream="4">
+            <span class="stream-name" data-i18n="s_item_4">Direct ISP / IPv6 IP</span>
+            <span class="stream-fate fate-swallowed" data-i18n="fate_drop">SWALLOWED</span>
+          </div>
+
+          <div class="stream-item passed" data-stream="5">
+            <span class="stream-name" data-i18n="s_item_5">Current Dir ($PWD)</span>
+            <span class="stream-fate fate-passed" data-i18n="fate_pass">SLINGSHOT</span>
+          </div>
+
+          <div class="stream-item passed" data-stream="6">
+            <span class="stream-name" data-i18n="s_item_6">Pasted Image ($TMPDIR)</span>
+            <span class="stream-fate fate-passed" data-i18n="fate_pass">SLINGSHOT</span>
+          </div>
+        </div>
+
+        <!-- CENTER: The Black Hole Event Horizon -->
+        <div class="center-singularity-zone">
+          <div id="singularity-caption" class="singularity-caption" data-i18n="center_caption">
+            Hover any stream on the left · <strong>5 swallowed</strong> into horizon · <strong>2 lensed</strong> into VM
+          </div>
+        </div>
+
+        <!-- RIGHT COLUMN: Isolated Colima Container (What Claude Sees) -->
+        <div class="stage-column right-col">
+          <div class="col-header">
+            <span data-i18n="col_right_title">02. COLIMA VM CONTAINER</span>
+            <span data-i18n="col_right_sub">CLAUDE'S VIEW</span>
+          </div>
+
+          <div class="output-card blinded" id="out-card-identity">
+            <div class="output-label">
+              <span data-i18n="out_0_label">HOST FINGERPRINT</span>
+              <span>0 BYTES</span>
+            </div>
+            <div class="output-val highlight-red" data-i18n="out_0_val">Undetectable (--hostname blackhole)</div>
+          </div>
+
+          <div class="output-card verified" id="out-card-workspace">
+            <div class="output-label">
+              <span data-i18n="out_1_label">PROJECT MOUNT</span>
+              <span>VIRTIOFS 3.2 GB/S</span>
+            </div>
+            <div class="output-val highlight-gold" data-i18n="out_1_val">/workspace (UID/GID matched rw)</div>
+          </div>
+
+          <div class="output-card verified" id="out-card-clipboard">
+            <div class="output-label">
+              <span data-i18n="out_2_label">CLIPBOARD BRIDGE</span>
+              <span>READ-ONLY</span>
+            </div>
+            <div class="output-val highlight-gold" data-i18n="out_2_val">$TMPDIR/*.png mirrored in 0.5s</div>
+          </div>
+
+          <div class="output-card verified" id="out-card-egress">
+            <div class="output-label">
+              <span data-i18n="out_3_label">NETWORK EGRESS</span>
+              <span id="out-egress-badge">FAIL-CLOSE</span>
+            </div>
+            <div class="output-val highlight-green" id="out-egress-val" data-i18n="out_3_val">utun0 Verified · IPv6 Disabled</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Hero Bottom Bar: Legend + Install Pill -->
+      <div class="hero-bottom-bar">
+        <div class="legend-inline">
+          <span><i class="legend-dot red"></i><span data-i18n="legend_red">Red stream: Swallowed into Event Horizon (Never reaches Claude)</span></span>
+          <span><i class="legend-dot gold"></i><span data-i18n="legend_gold">Gold stream: Lensed across Horizon into Colima VM</span></span>
+        </div>
+
+        <div class="install-pill">
+          <span class="prompt">$</span>
+          <code>git clone https://github.com/tommy0103/blackhole.git</code>
+          <button id="copy-install-btn" class="copy-btn" type="button">COPY</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Below-the-Fold Deck -->
+    <div class="content-deck">
+      <!-- 01. Interactive Terminal -->
+      <section class="section">
+        <div class="section-header">
+          <span class="section-tag" data-i18n="s2_tag">01 // TELEMETRY</span>
+          <h2 class="section-title" data-i18n="s2_title">Same claude Command. Different Universe.</h2>
+        </div>
+
+        <div class="terminal-shell">
+          <div class="terminal-header">
+            <div class="traffic-lights">
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
+            <div class="terminal-tabs">
+              <button class="term-tab active" data-tab="launch" type="button">claude</button>
+              <button class="term-tab" data-tab="status" type="button">status &amp; profiles</button>
+              <button class="term-tab" data-tab="netwatch" type="button">net-watch</button>
+              <button class="term-tab" data-tab="resume" type="button">resume</button>
+            </div>
+          </div>
+
+          <div id="terminal-body" class="terminal-body"></div>
+
+          <div class="terminal-statusline">
+            <div class="statusline-left">
+              <span class="ansi-badge"> BLACKHOLE </span>
+              <span class="ansi-magenta">COLIMA VM</span>
+              <span class="ansi-dim">·</span>
+              <span class="ansi-cyan">/workspace</span>
+            </div>
+            <div class="ansi-dim">virtiofs · clipboard mirror · no-new-privileges</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 02. Monumental Benchmark Numbers -->
+      <section class="section">
+        <div class="section-header">
+          <span class="section-tag" data-i18n="s3_tag">02 // VELOCITY</span>
+          <h2 class="section-title" data-i18n="s3_title">Live Two-Way Sync Over virtiofs.</h2>
+        </div>
+
+        <div class="stats-grid">
+          <div>
+            <div class="stat-value">3.2 GB/s</div>
+            <div class="stat-label" data-i18n="stat1_label">Sequential Read</div>
+            <p class="stat-sub" data-i18n="stat1_sub">64 MB read in 20.1 ms across the VM boundary via Apple Virtualization virtiofs.</p>
+          </div>
+
+          <div>
+            <div class="stat-value">1.2 GB/s</div>
+            <div class="stat-label" data-i18n="stat2_label">Sequential Write (fsync)</div>
+            <p class="stat-sub" data-i18n="stat2_sub">Immediate bi-directional visibility between host editor and container tools.</p>
+          </div>
+
+          <div>
+            <div class="stat-value">0.03 ms</div>
+            <div class="stat-label" data-i18n="stat3_label">Per-File Metadata Stat</div>
+            <p class="stat-sub" data-i18n="stat3_sub">1,000 files traversed in 33.9 ms — full ripgrep and git status without lag.</p>
+          </div>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <div>BLACKHOLE // MIT LICENSE</div>
+        <div>
+          <a href="./blog.html">Blog</a>
+          &nbsp;/&nbsp;
+          <a href="https://github.com/tommy0103/blackhole" target="_blank" rel="noopener noreferrer">GitHub</a>
+          &nbsp;/&nbsp;
+          <a href="https://github.com/tommy0103/blackhole/blob/main/README.md" target="_blank" rel="noopener noreferrer">README</a>
+          &nbsp;/&nbsp;
+          <a href="https://github.com/tommy0103/blackhole/blob/main/AGENTS.md" target="_blank" rel="noopener noreferrer">AGENTS.md</a>
+        </div>
+      </footer>
+    </div>
+  </main>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
