@@ -22,6 +22,7 @@ COPY blackhole-statusline.sh /usr/local/bin/blackhole-statusline
 COPY blackhole-session-hook.sh /usr/local/bin/blackhole-session-hook
 COPY blackhole-registry.mjs /usr/local/bin/blackhole-registry
 COPY blackhole-signal.mjs /usr/local/bin/blackhole-signal
+COPY blackhole-proxy.cjs /usr/local/bin/blackhole-proxy
 COPY blackhole-bashrc.sh /usr/local/etc/blackhole-bashrc
 RUN chmod 0755 /usr/local/bin/blackhole-entrypoint \
         /usr/local/bin/blackhole-statusline \

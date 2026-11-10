@@ -38,6 +38,18 @@ Before making changes, run read-only status checks (these never disturb running 
 
 ### 3. Creating & Binding a Dedicated Colima Profile for a Project
 
+On Linux/WSL2, use the existing Docker Engine instead: `docker info` must work
+for the normal user. `BLACKHOLE_BACKEND=auto` selects Docker on Linux and Colima
+on macOS. Do not install Colima or add a nested VM on WSL2. Docker Desktop WSL2
+integration is optional; do not install it over a working native engine.
+`BLACKHOLE_PROFILE` overrides the legacy `BLACKHOLE_COLIMA_PROFILE` and bindings.
+Docker profiles share one engine/image cache and isolate credential volumes;
+binding a Docker profile does not allocate a new VM.
+Sessions require a rootful engine accessible to the normal user. Rootless
+Docker maps host-owned files to container UID 0 and is explicitly rejected
+before session setup; do not work around this with `sudo`, UID 0 sessions,
+recursive ownership changes, or world-writable project permissions.
+
 When the user wants a separate VM (custom CPU/RAM or isolated Docker/credentials volume) for a specific project directory:
 
 ```bash
@@ -51,7 +63,7 @@ BLACKHOLE_COLIMA_PROFILE=<profile> ./bin/blackhole setup
 ./bin/blackhole bind <profile> /path/to/project
 ```
 
-Subdirectories inherit the binding automatically. Precedence is: `BLACKHOLE_COLIMA_PROFILE` env var > nearest ancestor directory binding > `default`.
+Subdirectories inherit the binding automatically. Precedence is: `BLACKHOLE_PROFILE` > `BLACKHOLE_COLIMA_PROFILE` > nearest ancestor directory binding > `default`.
 
 ### 4. Adding Per-Project Linux Tools (`.blackhole/Dockerfile`)
 
@@ -91,6 +103,29 @@ macOS binaries (`/opt/homebrew/bin`) are Mach-O and cannot be mounted into the L
 
 ### 6. Network Control & Fail-Close Proxy Protection (`net` / `net-watch`)
 
+The commands below describe Colima. For Docker/WSL2, launch with
+`BLACKHOLE_PROXY=http://host:port` (an HTTP proxy reachable from containers).
+The endpoint is saved per profile. Each session joins an internal network and
+uses an unprivileged TCP relay capped at 64 MiB/0.25 CPU with no host ports,
+project mounts, credentials, or Linux capabilities. There is no direct external
+route when the upstream is down, and no polling daemon. `net off/on/status`
+controls only these relays; `net off` also latches new sessions offline.
+Guarded sessions set `--dns 127.0.0.1` to avoid inherited host DNS forwarding
+on older Docker engines; retain local relay alias resolution and never remove
+this override without verifying DNS confinement as well as TCP confinement.
+Existing unguarded sessions must be restarted before this protection applies.
+Do not apply Colima iptables scripts to a shared WSL host. VM `net ipv6` and
+`net-watch` remain Colima-only. The upstream proxy's routing determines exit IP.
+
+On WSL2, use `blackhole clipboard paste [relative.png]` after Win+Shift+S.
+It reads the Windows clipboard once via `scripts/clipboard.ps1`, preserves it,
+and returns PNG data without passing a project output path to Windows.
+`scripts/clipboard.py` requires host Python 3 and publishes the complete PNG
+inside the project via pinned directory descriptors and a no-clobber hard link,
+printing its `/workspace` path. Never replace this with a checked-path `mv`:
+the running agent can replace paths between validation and publication.
+Do not start the macOS clipboard mirror on WSL or inject keys into Claude's TUI.
+
 - **Block or restore outbound VM internet**:
   ```bash
   blackhole net off --all          # or --profile <name>
@@ -124,7 +159,11 @@ To coordinate between a host agent/runner (e.g., Codex or a test harness) and Cl
 
 | File | Runs Where | Responsibility |
 | --- | --- | --- |
-| [`bin/blackhole`](bin/blackhole) | macOS Host (Bash) | CLI entrypoint (`blackhole` and `claude` symlink target), profile resolution, container launcher, `net` / `net-watch` / `export-watch` / `clipboard` daemons |
+| [`bin/blackhole`](bin/blackhole) | macOS / Linux / WSL2 (Bash) | CLI entrypoint, backend/profile resolution, container launcher, Colima daemons |
+| [`lib/docker-backend.sh`](lib/docker-backend.sh) | Linux / WSL2 (Bash) | Docker proxy-only networks, relay lifecycle, profile network controls, Windows clipboard bridge |
+| [`blackhole-proxy.cjs`](blackhole-proxy.cjs) | Unprivileged relay container | TCP forwarding to one explicit upstream HTTP proxy, no direct fallback |
+| [`scripts/clipboard.ps1`](scripts/clipboard.ps1) | Windows (STA PowerShell) | Return clipboard PNG data as base64, without opening project paths |
+| [`scripts/clipboard.py`](scripts/clipboard.py) | WSL2 (Python 3) | Capture clipboard data and atomically publish it within pinned project directories |
 | [`Dockerfile`](Dockerfile) | Colima VM (Build) | Debian `node:22-bookworm-slim` base image, system packages, `@anthropic-ai/claude-code`, helper scripts |
 | [`docker-entrypoint.sh`](docker-entrypoint.sh) | Container (Root -> `node`) | Matches `node` UID/GID to `/workspace`, installs statusLine + `SessionStart`/`SessionEnd` hooks into `/home/node/.claude/settings.json`, records project registry entry, drops privileges via `gosu node` |
 | [`blackhole-session-hook.sh`](blackhole-session-hook.sh) | Container (`node`) | Claude hook (`SessionStart`/`SessionEnd`) updating `/home/node/.claude/blackhole/sessions/<id>.json` and `projects/<hash>.json` |
@@ -143,6 +182,7 @@ To coordinate between a host agent/runner (e.g., Codex or a test harness) and Cl
    - Helper containers spawned by `status`, `scan_registry`, `show_profiles`, `export_session`, or `run_export_watch` must always run with `--network none` and mount the config volume `:ro` (or not at all in `status`) so they never race with an active Claude session.
 3. **Atomic Writes Everywhere**:
    - Host bindings, watcher state files, exported JSONL files, registry JSON files, and signal files must always be written to a temporary file in the same directory (e.g., `${file}.tmp.$$`) and renamed (`mv`) into place.
+   - Clipboard PNGs use a same-directory temporary file and an atomic no-clobber hard link instead of rename, so an existing target cannot be overwritten or followed as a directory. All project operations use directory descriptors and refuse symlink traversal; writes use the already-open temporary file descriptor.
 4. **Fail-Close Network Watchdog**:
    - Any changes to `run_net_watch`, `run_net_guard`, or `net_watch_stop` must preserve fail-close behavior: block network before the first probe, block network if the watcher exits or heartbeat ages out, and keep network blocked on `net-watch stop`.
 5. **Host Launcher vs Container Image Boundary**:
@@ -157,3 +197,18 @@ Whenever you add or modify a subcommand, flag, or environment variable in [`bin/
 1. Update `usage()` in [`bin/blackhole`](bin/blackhole).
 2. Update both [`README.md`](README.md) (English) and [`README.zh-CN.md`](README.zh-CN.md) (Chinese), maintaining 1:1 structural parity (identical heading count, table count, code block count, and valid relative links).
 3. Update this [`AGENTS.md`](AGENTS.md) if the operational workflow or architecture changed.
+
+### 4. Verification
+
+Run `python3 -m unittest discover -s tests -v`. Launcher tests use fake engine
+commands and never start a VM/container or contact an API. Relay tests use Node
+and local sockets only (skipped if host Node is absent). CI runs on Linux and
+macOS, including the system Bash. For real Docker smoke tests, use a unique
+profile/state directory, bound runtime resources, a controlled local proxy, and
+remove only test-created containers, volumes, and networks afterwards. Check
+direct-route failure, proxy loss, net off/on, non-root execution, and persistence;
+do not authenticate Claude or alter the user's clipboard to run a test.
+Run `python3 tests/smoke_permissions.py IMAGE` against an existing local image
+to verify the local entrypoint with ordinary `0755`/`0644` project permissions,
+root-owned writable Windows-style mounts, and root-owned unwritable mounts.
+This uses a disposable network-disabled container with no host mounts or volumes.

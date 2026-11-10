@@ -2,7 +2,9 @@
 set -euo pipefail
 
 readonly PROGRAM="${0##*/}"
-PROFILE="${BLACKHOLE_COLIMA_PROFILE:-default}"
+PROFILE="${BLACKHOLE_PROFILE:-${BLACKHOLE_COLIMA_PROFILE:-default}}"
+BACKEND="${BLACKHOLE_BACKEND:-auto}"
+readonly HOST_OS="$(uname -s)"
 readonly DEFAULT_IMAGE="${BLACKHOLE_IMAGE:-blackhole-claude:latest}"
 HOME_VOLUME=""
 readonly COLIMA_DIR="${COLIMA_HOME:-${HOME}/.colima}"
@@ -35,6 +37,34 @@ die() {
     exit 1
 }
 
+format_columns() {
+    if command -v column >/dev/null 2>&1; then
+        column -t -s $'\t'
+    else
+        cat
+    fi
+}
+
+resolve_backend() {
+    if [[ "$BACKEND" == auto ]]; then
+        case "$HOST_OS" in
+            Darwin) BACKEND=colima ;;
+            Linux) BACKEND=docker ;;
+            *) die "run Blackhole in macOS or Linux (on Windows, use a WSL2 terminal)" ;;
+        esac
+    fi
+    case "$BACKEND" in
+        colima|docker) ;;
+        *) die "BLACKHOLE_BACKEND must be auto, colima, or docker" ;;
+    esac
+    export BLACKHOLE_BACKEND="$BACKEND"
+}
+
+require_colima_backend() {
+    [[ "$BACKEND" == colima ]] \
+        || die "this command requires Colima; Docker/WSL2 uses BLACKHOLE_PROXY with net off/on/status instead"
+}
+
 binding_file_for() {
     local dir="$1"
     local hash
@@ -42,9 +72,9 @@ binding_file_for() {
     printf '%s/bindings/%s.binding' "$STATE_DIR" "$hash"
 }
 
-# Precedence: BLACKHOLE_COLIMA_PROFILE > per-directory binding > default.
+# Precedence: BLACKHOLE_PROFILE > BLACKHOLE_COLIMA_PROFILE > binding > default.
 resolve_profile() {
-    if [[ -z "${BLACKHOLE_COLIMA_PROFILE:-}" ]]; then
+    if [[ -z "${BLACKHOLE_PROFILE:-${BLACKHOLE_COLIMA_PROFILE:-}}" ]]; then
         local dir file bound
         dir="$(pwd -P 2>/dev/null || pwd)"
         # A binding applies to the whole project, including subdirectories.
@@ -61,6 +91,8 @@ resolve_profile() {
             dir="$(dirname "$dir")"
         done
     fi
+    [[ "$PROFILE" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] \
+        || die "invalid profile name: ${PROFILE}"
     HOME_VOLUME="${BLACKHOLE_HOME_VOLUME:-blackhole-claude-home-${PROFILE}}"
 }
 
@@ -74,7 +106,8 @@ profile_bind() {
     require_host_tools
 
     target="$(cd "$target" && pwd -P)"
-    if ! colima list -j 2>/dev/null | grep -Fq "\"name\":\"${profile}\""; then
+    if [[ "$BACKEND" == colima ]] \
+        && ! colima list -j 2>/dev/null | grep -Fq "\"name\":\"${profile}\""; then
         log "warning: Colima profile '${profile}' does not exist yet"
         log "create it with: colima start --profile ${profile} --vm-type vz --mount-type virtiofs --cpu 4 --memory 16 --disk 60"
     fi
@@ -119,7 +152,7 @@ profile_bindings() {
         printf 'No bound projects.\n'
         return 0
     fi
-    { printf 'PATH\tPROFILE\n'; printf '%s' "$rows"; } | column -t -s $'\t'
+    { printf 'PATH\tPROFILE\n'; printf '%s' "$rows"; } | format_columns
 }
 
 usage() {
@@ -143,6 +176,7 @@ Usage:
   blackhole net status [--all | --profile NAME]
   blackhole net ipv6 off|on|status [--all | --profile NAME]
   blackhole clipboard start|status|stop|disable|enable
+  blackhole clipboard paste [relative.png]
   blackhole net-watch start [--profile NAME] [--interval SECONDS] [--fail-after N] [--recover-after N] [--url URL] [--proxy URL]
   blackhole net-watch status
   blackhole net-watch stop
@@ -153,18 +187,29 @@ Usage:
   blackhole shell
   blackhole help
 
-Run Claude Code inside the Colima VM with only the current directory mounted.
+Run Claude Code in a Linux container with only the current directory mounted.
+macOS uses Colima; Linux/WSL2 uses the existing Docker engine (no extra VM).
 Project changes are visible on both sides immediately. Claude credentials and
 settings are retained in a private Docker volume.
 
 Environment:
-  BLACKHOLE_COLIMA_PROFILE  Colima profile (default: default)
+  BLACKHOLE_BACKEND         auto (macOS: colima, Linux/WSL2: docker), colima, docker
+  BLACKHOLE_PROFILE         Profile (default: default); Docker profiles share one engine
+  BLACKHOLE_COLIMA_PROFILE  Legacy profile override (below BLACKHOLE_PROFILE)
+  BLACKHOLE_PROXY           Docker proxy-only egress: http://host:port (saved per profile)
   BLACKHOLE_IMAGE           Override the base image and disable project images
   BLACKHOLE_HOME_VOLUME     Credential volume name
   BLACKHOLE_STATE_DIR       Host state directory (default: ~/.blackhole)
   BLACKHOLE_FUSE=1          Enable FUSE mounting (reduced isolation)
   BLACKHOLE_ALLOW_BROAD_MOUNT=1
-                            Allow mounting /, your home, or /Users
+                            Allow mounting filesystem, user-home, or drive roots
+
+Platform features:
+  Docker net off/on/status controls profile proxy relays; set BLACKHOLE_PROXY first.
+  net-watch and net ipv6 require Colima. Clipboard mirroring requires macOS;
+  WSL2 'clipboard paste' requires python3 and Windows PowerShell interop.
+  Sessions require a rootful Docker engine; rootless UID mapping is unsupported.
+  Lists use tab-separated output when the optional 'column' utility is absent.
 
 Project tools:
   If ./.blackhole/Dockerfile exists, it is built from the base image and used
@@ -173,14 +218,20 @@ EOF
 }
 
 require_host_tools() {
-    command -v colima >/dev/null 2>&1 || die "colima is required"
+    if [[ "$BACKEND" == colima ]]; then
+        command -v colima >/dev/null 2>&1 || die "colima is required"
+    fi
     command -v docker >/dev/null 2>&1 || die "the Docker CLI is required"
 }
 
 docker_for() {
     local profile="$1"
     shift
-    DOCKER_HOST="unix://${COLIMA_DIR}/${profile}/docker.sock" docker "$@"
+    if [[ "$BACKEND" == colima ]]; then
+        DOCKER_HOST="unix://${COLIMA_DIR}/${profile}/docker.sock" docker "$@"
+    else
+        docker "$@"
+    fi
 }
 
 docker_vm() {
@@ -188,6 +239,13 @@ docker_vm() {
 }
 
 ensure_vm() {
+    if [[ "$BACKEND" == docker ]]; then
+        local os_type
+        os_type="$(docker_vm info --format '{{.OSType}}')" \
+            || die "cannot connect to Docker; start Docker Engine in WSL2 or enable Docker Desktop WSL integration, and check socket permissions"
+        [[ "$os_type" == linux ]] || die "Blackhole requires a Linux Docker engine"
+        return 0
+    fi
     if ! colima -p "$PROFILE" status >/dev/null 2>&1; then
         if ! colima list -j 2>/dev/null | grep -Fq "\"name\":\"${PROFILE}\""; then
             die "Colima profile '${PROFILE}' does not exist; create it with: colima start --profile ${PROFILE} --vm-type vz --mount-type virtiofs --cpu 4 --memory 16 --disk 60"
@@ -197,6 +255,16 @@ ensure_vm() {
     fi
     docker_vm info >/dev/null 2>&1 \
         || die "cannot connect to Colima profile '${PROFILE}'"
+}
+
+ensure_session_backend() {
+    [[ "$BACKEND" == docker ]] || return 0
+    local security
+    security="$(docker_vm info --format '{{json .SecurityOptions}}')" \
+        || die "cannot inspect Docker security options"
+    if [[ "$security" == *'"name=rootless"'* ]]; then
+        die "rootless Docker is not supported: project files map to container UID 0; select a rootful Docker context accessible to your normal user (do not run Blackhole with sudo)"
+    fi
 }
 
 build_image() {
@@ -270,12 +338,18 @@ validate_project() {
 
     if [[ "${BLACKHOLE_ALLOW_BROAD_MOUNT:-0}" != 1 ]]; then
         case "$PROJECT_DIR" in
-            /|/Users|"$HOME")
+            /|/Users|/home|/root|"$HOME"|/mnt|/mnt/[a-zA-Z]|/mnt/[a-zA-Z]/Users)
                 die "refusing to mount the broad directory '${PROJECT_DIR}'; cd into a project first (override with BLACKHOLE_ALLOW_BROAD_MOUNT=1)"
                 ;;
         esac
+        if [[ "$PROJECT_DIR" =~ ^/mnt/[a-zA-Z]/Users/[^/]+$ ]]; then
+            die "refusing to mount Windows home '${PROJECT_DIR}'; cd into a project first"
+        fi
     fi
 
+    # --mount below fails if a source is unavailable in the selected engine,
+    # instead of silently creating an empty project folder.
+    [[ "$BACKEND" == colima ]] || return 0
     colima -p "$PROFILE" ssh -- test -d "$PROJECT_DIR" </dev/null >/dev/null 2>&1 \
         || die "'${PROJECT_DIR}' is not visible in Colima; configure this path as a Colima mount"
 
@@ -295,6 +369,8 @@ fuse_enabled() {
 run_container() {
     local command=("$@")
     local tty_args=(-i)
+    # Quote the whole CSV field, including embedded commas or double quotes.
+    local mount_source="${PROJECT_DIR//\"/\"\"}"
 
     if [[ -t 0 && -t 1 ]]; then
         tty_args=(-it)
@@ -316,7 +392,7 @@ run_container() {
         -e "BLACKHOLE_PROFILE=${PROFILE}"
         -e "BLACKHOLE_PROJECT_PATH=${PROJECT_DIR}"
         -e 'PS1=[BLACKHOLE] \w \$ '
-        -v "${PROJECT_DIR}:/workspace"
+        --mount "type=bind,\"src=${mount_source}\",dst=/workspace"
         -v "${HOME_VOLUME}:/home/node"
         -w /workspace
     )
@@ -325,6 +401,10 @@ run_container() {
         run_args+=(--device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined)
     else
         run_args+=(--security-opt no-new-privileges)
+    fi
+
+    if [[ "$BACKEND" == docker ]]; then
+        prepare_proxy
     fi
 
     # Expose the mirrored clipboard images at the same absolute paths the
@@ -347,7 +427,7 @@ run_container() {
     done
 
     if [[ -t 2 && -z "${NO_COLOR:-}" ]]; then
-        printf '\033[1;97;45m ⬤ BLACKHOLE \033[0m \033[1;35mColima VM isolated session · %s\033[0m\n' "$PROFILE" >&2
+        printf '\033[1;97;45m ⬤ BLACKHOLE \033[0m \033[1;35m%s container session · %s\033[0m\n' "$BACKEND" "$PROFILE" >&2
         printf '\033[36m%s\033[0m \033[2m(only this directory is mounted)\033[0m\n' "$PROJECT_DIR" >&2
         if fuse_enabled; then
             printf '\033[1;33m⚠ FUSE enabled\033[0m \033[2m(SYS_ADMIN + AppArmor unconfined; reduced isolation)\033[0m\n' >&2
@@ -408,6 +488,29 @@ install_links() {
 }
 
 profile_records() {
+    if [[ "$BACKEND" == docker ]]; then
+        local volumes
+        volumes="$(docker_vm volume ls --format '{{.Name}}')" || return 1
+        # Docker profiles are credential/session namespaces, not extra VMs.
+        {
+            printf '%s\n' "$PROFILE"
+            printf '%s\n' "$volumes" | sed -n 's/^blackhole-claude-home-//p'
+            local file
+            for file in "$STATE_DIR"/bindings/*.binding; do
+                [[ -f "$file" ]] || continue
+                sed -n 's/^profile=//p' "$file"
+            done
+            for file in "$STATE_DIR"/docker-proxy/*.proxy; do
+                [[ -f "$file" ]] || continue
+                file="${file##*/}"
+                printf '%s\n' "${file%.proxy}"
+            done
+        } | LC_ALL=C sort -u | while IFS= read -r profile; do
+            [[ "$profile" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || continue
+            printf '%s Running\n' "$profile"
+        done
+        return 0
+    fi
     # `colima list -j` emits one JSON object per line, not an array.
     if command -v python3 >/dev/null 2>&1; then
         colima list -j | python3 -c '
@@ -430,6 +533,8 @@ for line in sys.stdin:
 scan_registry() {
     local command="$1"
     shift
+    local records
+    records="$(profile_records)" || die "cannot list profiles from the selected engine"
     while read -r profile status; do
         [[ "$status" == "Running" ]] || continue
         local volume="blackhole-claude-home-${profile}"
@@ -447,10 +552,16 @@ scan_registry() {
         if [[ -n "$output" ]]; then
             printf '%s\n' "$output"
         fi
-    done < <(profile_records)
+    done <<< "$records"
 }
 
 profile_meta_records() {
+    if [[ "$BACKEND" == docker ]]; then
+        local records
+        records="$(profile_records)" || return 1
+        printf '%s\n' "$records" | awk '{print $1, $2, "?"}'
+        return 0
+    fi
     if command -v python3 >/dev/null 2>&1; then
         colima list -j | python3 -c '
 import json, sys
@@ -471,6 +582,7 @@ running_pairs() {
     while read -r profile status; do
         [[ "$status" == "Running" ]] || continue
         docker_for "$profile" ps --filter label=dev.blackhole.session=1 \
+            --filter "label=dev.blackhole.profile=${profile}" \
             --format '{{.Label "dev.blackhole.profile"}}|{{.Label "dev.blackhole.project"}}' 2>/dev/null \
             | while IFS='|' read -r pair_profile pair_path; do
                 [[ -n "$pair_profile" ]] && printf '%s\t%s\n' "$pair_profile" "$pair_path"
@@ -508,10 +620,12 @@ show_registry() {
     fi
 
     { printf '%s\n' "$header"; printf '%s\n' "$rows"; } \
-        | column -t -s $'\t'
+        | format_columns
 }
 
 show_profiles() {
+    local records
+    records="$(profile_meta_records)" || die "cannot list profiles from the selected engine"
     printf 'PROFILE\tSTATUS\tMEMORY\tBLACKHOLE\tPROJECTS\tSESSIONS\tLAST USED\n'
     local profile status memory
     while read -r profile status memory; do
@@ -525,14 +639,18 @@ show_profiles() {
                 initialized="no"
             elif ! docker_for "$profile" image inspect "$IMAGE" >/dev/null 2>&1; then
                 initialized="no"
-            elif ! "${registry[@]}" projects >/dev/null 2>&1; then
-                initialized="stale"
             else
-                initialized="yes"
-                projects="$("${registry[@]}" projects | wc -l | tr -d ' ')"
-                sessions="$("${registry[@]}" sessions | wc -l | tr -d ' ')"
-                last="$("${registry[@]}" projects \
-                    | awk -F '\t' 'BEGIN { m = "" } { if ($3 > m) m = $3 } END { print (m == "" ? "-" : m) }')"
+                local project_rows session_rows
+                if ! project_rows="$("${registry[@]}" projects)" \
+                    || ! session_rows="$("${registry[@]}" sessions)"; then
+                    initialized="stale"
+                else
+                    initialized="yes"
+                    projects="$(printf '%s' "$project_rows" | awk 'END {print NR}')"
+                    sessions="$(printf '%s' "$session_rows" | awk 'END {print NR}')"
+                    last="$(printf '%s' "$project_rows" \
+                        | awk -F '\t' 'BEGIN { m = "" } { if ($3 > m) m = $3 } END { print (m == "" ? "-" : m) }')"
+                fi
             fi
         fi
         if [[ "$memory" == "?" ]]; then
@@ -542,7 +660,7 @@ show_profiles() {
             printf '%s\t%s\t%sGiB\t%s\t%s\t%s\t%s\n' \
                 "$profile" "$status" "$memory" "$initialized" "$projects" "$sessions" "$last"
         fi
-    done < <(profile_meta_records) | column -t -s $'\t'
+    done <<< "$records" | format_columns
 }
 
 select_session_row() {
@@ -558,7 +676,7 @@ select_session_row() {
         || die "no session matches '${prefix}'${want_profile:+ on profile '${want_profile}'}; start that profile first"
     count="$(printf '%s\n' "$matches" | wc -l | tr -d ' ')"
     if [[ "$count" != 1 ]]; then
-        printf '%s\n' "$matches" | column -t -s $'\t' >&2
+        printf '%s\n' "$matches" | format_columns >&2
         die "session prefix '${prefix}' is ambiguous; add --profile NAME"
     fi
 
@@ -603,7 +721,7 @@ resume_session() {
 
     log "resuming ${SELECTED_ID} on profile '${SELECTED_PROFILE}' in ${SELECTED_PATH}"
     cd "$SELECTED_PATH"
-    export BLACKHOLE_COLIMA_PROFILE="$SELECTED_PROFILE"
+    export BLACKHOLE_PROFILE="$SELECTED_PROFILE"
     exec "${ROOT_DIR}/bin/blackhole" --resume "$SELECTED_ID"
 }
 
@@ -882,7 +1000,7 @@ export_watch_status() {
         return 0
     fi
     { printf 'PROFILE\tSESSION\tPID\tSTATUS\tLAST EXPORT\n'; printf '%s' "$rows"; } \
-        | column -t -s $'\t'
+        | format_columns
 }
 
 export_watch_stop() {
@@ -1067,7 +1185,7 @@ net_command() {
     done
 
     if [[ "$action" == status ]]; then
-        { printf 'PROFILE\tNETWORK\n'; printf '%s' "$rows"; } | column -t -s $'\t'
+        { printf 'PROFILE\tNETWORK\n'; printf '%s' "$rows"; } | format_columns
     fi
     return 0
 }
@@ -1568,7 +1686,7 @@ net_ipv6_command() {
     done
 
     if [[ "$action" == status ]]; then
-        { printf 'PROFILE\tIPV6\n'; printf '%s' "$rows"; } | column -t -s $'\t'
+        { printf 'PROFILE\tIPV6\n'; printf '%s' "$rows"; } | format_columns
     fi
     return 0
 }
@@ -1628,6 +1746,7 @@ run_clipboard_watch() {
 }
 
 clipboard_enabled() {
+    [[ "$HOST_OS" == Darwin ]] || return 1
     [[ "${BLACKHOLE_CLIPBOARD:-1}" != 0 ]] || return 1
     [[ ! -f "$CLIPBOARD_DISABLED" ]]
 }
@@ -1699,7 +1818,8 @@ clipboard_watch_stop() {
 
 status() {
     require_host_tools
-    printf 'Colima profile: %s\n' "$PROFILE"
+    printf 'Backend:        %s\n' "$BACKEND"
+    printf 'Profile:        %s\n' "$PROFILE"
 
     local launcher
     launcher="$(command -v claude 2>/dev/null || true)"
@@ -1711,7 +1831,11 @@ status() {
         printf "                 run 'blackhole install' and restart your shell\n"
     fi
 
-    if colima -p "$PROFILE" status >/dev/null 2>&1; then
+    if [[ "$BACKEND" == docker ]]; then
+        ensure_vm
+        printf 'Docker:         running (shared engine)\n'
+        docker_net_command status --profile "$PROFILE"
+    elif colima -p "$PROFILE" status >/dev/null 2>&1; then
         printf 'Colima:         running\n'
     else
         printf 'Colima:         stopped\n'
@@ -1766,8 +1890,31 @@ status() {
 }
 
 main() {
+    resolve_backend
+    if [[ "$BACKEND" == docker ]]; then
+        source "${ROOT_DIR}/lib/docker-backend.sh"
+    fi
     resolve_profile
     local command="${1:-run}"
+    case "$command" in
+        net)
+            if [[ "$BACKEND" == docker ]]; then
+                shift
+                docker_net_command "$@"
+                return
+            fi
+            ;;
+        net-watch|__net-watch|__net-guard) require_colima_backend ;;
+        clipboard|__clipboard-watch)
+            if [[ "$BACKEND" == docker && "${2:-}" == paste ]]; then
+                shift 2
+                [[ $# -le 1 ]] || die "usage: blackhole clipboard paste [relative.png]"
+                clipboard_paste "$@"
+                return
+            fi
+            [[ "$HOST_OS" == Darwin ]] || die "clipboard mirroring requires macOS; save images inside the project on WSL2"
+            ;;
+    esac
     case "$command" in
         help|-h)
             usage
@@ -1935,6 +2082,7 @@ main() {
             [[ $# -eq 0 ]] || die "shell does not accept arguments"
             require_host_tools
             ensure_vm
+            ensure_session_backend
             validate_project
             resolve_project_image
             ensure_image
@@ -1949,6 +2097,7 @@ main() {
             fi
             require_host_tools
             ensure_vm
+            ensure_session_backend
             validate_project
             resolve_project_image
             ensure_image
@@ -1957,6 +2106,7 @@ main() {
         *)
             require_host_tools
             ensure_vm
+            ensure_session_backend
             validate_project
             resolve_project_image
             ensure_image
